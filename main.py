@@ -67,6 +67,7 @@ if os.path.exists(MEMORY_FILE):
         print("saved_data :", saved_data)
     memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
     memory.chat_memory.messages = saved_data["chat_history"]
+    memory.moving_summary_buffer = saved_data.get("summary_buffer", "")
 else:
     memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
 # 1. Prompt for ReAct
@@ -143,7 +144,7 @@ try:
         # Add the agent's response to the conversation memory
         memory.chat_memory.add_message(AIMessage(content=response["output"]))
         with open(MEMORY_FILE, "wb") as f:
-            pickle.dump({"chat_history": memory.chat_memory.messages}, f)
+            pickle.dump({"chat_history": memory.chat_memory.messages, "summary_buffer": memory.moving_summary_buffer}, f)
         # Save memory after each turn
         #with open(MEMORY_FILE, "wb") as f:
         #    pickle.dump(memory, f)
