@@ -90,6 +90,7 @@ class CustomRetrievalTool(BaseTool):
         )
 
     def _run(self, query: str) -> str:
+        print("call tool")
         result = self._qa_chain({"query": query})
         answer = result["result"]
         # Optionally, include sources

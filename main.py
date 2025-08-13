@@ -10,13 +10,54 @@ from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from tools import CustomRetrievalTool
-
+from prompts import prompt1
 import os
 import pickle
 import dill
+#from langchain_community.chat_models import ChatHuggingFace
+from langchain_community.llms import HuggingFaceHub
+from langchain import HuggingFacePipeline
+#from transformers import pipeline
+import transformers
+import torch
+from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+#from huggingface_hub import InferenceClient
 
-# 2. Setup LLM
-llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.0)
+# Create a pipeline (local or via HF Hub)
+
+#prompt = prompt1
+PERSIST_DIR = "./chroma_pdf_store"
+
+
+
+model = "EleutherAI/gpt-neo-125m"
+tokenizer = transformers.AutoTokenizer.from_pretrained(model)
+
+pipeline = transformers.pipeline(
+    "text-generation",
+    model=model,
+    tokenizer=tokenizer,
+    torch_dtype=torch.bfloat16,
+    trust_remote_code=True,
+    max_length=200,
+    do_sample=True,
+    top_k=10,
+    num_return_sequences=1,
+    eos_token_id=tokenizer.eos_token_id,
+    pad_token_id=tokenizer.eos_token_id,
+)
+llm = HuggingFacePipeline(pipeline=pipeline)
+
+
+model_name = "BAAI/bge-small-en"
+model_kwargs = {"device": "cpu"}
+encode_kwargs = {"normalize_embeddings": True}
+emb = HuggingFaceBgeEmbeddings(
+    model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
+)
+
+# Wrap the pipeline for LangChain
+#llm = ChatHuggingFace(pipeline=pipe, temperature=0.0)
 
 
 MEMORY_FILE = "chat_memory.pkl"
@@ -36,10 +77,21 @@ prompt
 # 3. PDF Loader + Retriever
 loader = PyPDFLoader("/scratch/09143/arnabd/pinn_fwi/agentic_RAG/agentic_RAG/data/Understanding_Climate_Change.pdf")
 docs = loader.load()
-emb = OpenAIEmbeddings()
-vectorstore = Chroma.from_documents(docs, emb)
+#emb = OpenAIEmbeddings()
+
+
+if os.path.exists(PERSIST_DIR):
+    print("🔹 Loading existing Chroma vector store...")
+    vectorstore = Chroma(persist_directory=PERSIST_DIR, embedding_function=emb)
+else:
+    print("🔹 Creating Chroma vector store from PDF...")
+    loader = PyPDFLoader("/scratch/09143/arnabd/pinn_fwi/agentic_RAG/agentic_RAG/data/Understanding_Climate_Change.pdf")
+    docs = loader.load()
+    vectorstore = Chroma.from_documents(docs, emb, persist_directory=PERSIST_DIR)
+    vectorstore.persist()
+    print("✅ Embeddings saved to", PERSIST_DIR)
+
 retriever = vectorstore.as_retriever()
-#pdf_qa = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
 custom_tool = CustomRetrievalTool(llm, retriever)
 
 # pdf_tool = Tool(
@@ -71,7 +123,10 @@ agent_executor = AgentExecutor.from_agent_and_tools(
 
 # Initial system message to set the context for the chat
 # SystemMessage is used to define a message from the system to the agent, setting initial instructions or context
-initial_message = "You are an AI assistant that can provide helpful answers using available tools.\nIf you are unable to answer, you can use the following tools: Time and Wikipedia."
+initial_message = ("You are an AI assistant. For every user question, you MUST use the available tools to find the answer, "
+    "even if you think you know the answer. Do NOT answer from your own knowledge. "
+    "The available tools are: custom_retrieval, Web_Search."
+)
 memory.chat_memory.add_message(SystemMessage(content=initial_message))
 
 # --- Chat Loop ---
