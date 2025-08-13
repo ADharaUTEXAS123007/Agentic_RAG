@@ -7,24 +7,31 @@ from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
-from langchain.memory import ConversationBufferMemory
+from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from tools import CustomRetrievalTool
+
 import os
 import pickle
+import dill
+
+# 2. Setup LLM
+llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.0)
 
 
 MEMORY_FILE = "chat_memory.pkl"
 if os.path.exists(MEMORY_FILE):
     with open(MEMORY_FILE, "rb") as f:
-        memory = pickle.load(f)
+        saved_data = pickle.load(f)
+        print("saved_data :", saved_data)
+    memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
+    memory.chat_memory.messages = saved_data["chat_history"]
 else:
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
 # 1. Prompt for ReAct
 prompt = hub.pull("hwchase17/structured-chat-agent")
 prompt
 
-# 2. Setup LLM
-llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.0)
 
 # 3. PDF Loader + Retriever
 loader = PyPDFLoader("/scratch/09143/arnabd/pinn_fwi/agentic_RAG/agentic_RAG/data/Understanding_Climate_Change.pdf")
@@ -32,13 +39,14 @@ docs = loader.load()
 emb = OpenAIEmbeddings()
 vectorstore = Chroma.from_documents(docs, emb)
 retriever = vectorstore.as_retriever()
-pdf_qa = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+#pdf_qa = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+custom_tool = CustomRetrievalTool(llm, retriever)
 
-pdf_tool = Tool(
-    name="PDF_Retriever",
-    func=pdf_qa.run,
-    description="Retrieve info from the PDF."
-)
+# pdf_tool = Tool(
+#     name="PDF_Retriever",
+#     func=pdf_qa.run,
+#     description="Retrieve info from the PDF."
+# )
 
 # 4. SerpAPI Web Search
 search = SerpAPIWrapper()  # Requires SERPAPI_API_KEY
@@ -49,7 +57,7 @@ web_tool = Tool(
 )
 
 # 5. Create Agent
-tools = [pdf_tool, web_tool]
+tools = [custom_tool, web_tool]
 
 agent = create_structured_chat_agent(
     llm=llm,
@@ -80,7 +88,7 @@ try:
         # Add the agent's response to the conversation memory
         memory.chat_memory.add_message(AIMessage(content=response["output"]))
         with open(MEMORY_FILE, "wb") as f:
-            pickle.dump(memory, f)
+            pickle.dump({"chat_history": memory.chat_memory.messages}, f)
         # Save memory after each turn
         #with open(MEMORY_FILE, "wb") as f:
         #    pickle.dump(memory, f)
