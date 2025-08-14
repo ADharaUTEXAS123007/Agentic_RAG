@@ -3,6 +3,7 @@ from langchain.tools import BaseTool
 from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
 from pydantic import PrivateAttr
+from typing import List, Dict, Any
 
 
 
@@ -95,8 +96,146 @@ class CustomRetrievalTool(BaseTool):
         answer = result["result"]
         # Optionally, include sources
         sources = result.get("source_documents", [])
-        sources_str = "\n".join([doc.page_content[:100] for doc in sources])
+        sources_str = "\n".join([doc.page_content for doc in sources])
         return f"{answer}\n\nSources:\n{sources_str}"
+
+    async def _arun(self, query: str) -> str:
+        return self._run(query)
+    
+
+
+class CustomRetrievalToolMultipleChunks(BaseTool):
+    name: str = "custom_retrieval_multiple_chunks"
+    description: str = "Retrieve answers from custom document store with multiple chunks and similarity scores"
+    _qa_chain: any = PrivateAttr()
+    _retriever: any = PrivateAttr()
+
+    def __init__(self, llm, retriever):
+        super().__init__()
+        self._retriever = retriever
+        self._qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True
+        )
+
+    def _run(self, query: str) -> str:
+        print("Calling custom retrieval tool")
+        
+        # Get multiple chunks with similarity scores
+        chunks_query_retriever = self._retriever.vectorstore.as_retriever(
+            search_kwargs={"k": 3}  # Retrieve 3 most relevant chunks
+        )
+        
+        # Get relevant documents
+        relevant_docs = chunks_query_retriever.get_relevant_documents(query)
+        
+        # Get similarity scores (if available)
+        try:
+            # Try to get similarity scores from the retriever
+            docs_with_scores = chunks_query_retriever.get_relevant_documents(
+                query, 
+                return_metadata=True
+            )
+        except:
+            # Fallback if return_metadata is not supported
+            docs_with_scores = [(doc, 0.0) for doc in relevant_docs]
+        
+        # Format the response with chunks and scores
+        response_parts = []
+        
+        # Add the QA chain result
+        qa_result = self._qa_chain({"query": query})
+        response_parts.append(f"Answer: {qa_result['result']}")
+        
+        # Add chunks with similarity scores
+        response_parts.append("\n\nRetrieved Chunks with Similarity Scores:")
+        for i, (doc, score) in enumerate(docs_with_scores, 1):
+            if hasattr(doc, 'page_content'):
+                content = doc.page_content
+                metadata = getattr(doc, 'metadata', {})
+                page_info = metadata.get('page', 'Unknown page')
+                
+                response_parts.append(f"\n--- Chunk {i} (Page {page_info}, Score: {score:.4f}) ---")
+                response_parts.append(f"{content[:300]}...")
+            else:
+                # Handle case where doc is already the content
+                response_parts.append(f"\n--- Chunk {i} (Score: {score:.4f}) ---")
+                response_parts.append(f"{str(doc)[:300]}...")
+        
+        return "\n".join(response_parts)
+
+    async def _arun(self, query: str) -> str:
+        return self._run(query)
+    
+
+class CustomRetrievalToolMultipleChunksScore(BaseTool):
+    name: str = "custom_retrieval_multiple_chunks"
+    description: str = "Retrieve answers from custom document store with multiple chunks and similarity scores"
+    _qa_chain: any = PrivateAttr()
+    _retriever: any = PrivateAttr()
+
+    def __init__(self, llm, retriever):
+        super().__init__()
+        self._retriever = retriever
+        self._qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True
+        )
+
+    def _run(self, query: str) -> str:
+        print("Calling custom retrieval tool with similarity scores")
+        
+        # Use similarity_search_with_score to get documents with scores
+        try:
+            # Get documents with similarity scores
+            docs_with_scores = self._retriever.vectorstore.similarity_search_with_score(
+                query, 
+                k=3
+            )
+            
+            # Get the QA chain result
+            qa_result = self._qa_chain({"query": query})
+            
+            # Format the response
+            response_parts = []
+            response_parts.append(f"Answer: {qa_result['result']}")
+            response_parts.append("\n\nRetrieved Chunks with Similarity Scores:")
+            
+            for i, (doc, score) in enumerate(docs_with_scores, 1):
+                content = doc.page_content
+                metadata = doc.metadata
+                page_info = metadata.get('page', 'Unknown page')
+                
+                # Convert similarity score to a more readable format
+                # Higher score = more similar (cosine similarity)
+                similarity_percentage = (1 - score) * 100 if score <= 1 else (1 / (1 + score)) * 100
+                
+                response_parts.append(f"\n--- Chunk {i} (Page {page_info}, Similarity: {similarity_percentage:.1f}%) ---")
+                response_parts.append(f"{content[:300]}...")
+            
+            return "\n".join(response_parts)
+            
+        except Exception as e:
+            print(f"Error getting similarity scores: {e}")
+            # Fallback to regular retrieval
+            relevant_docs = self._retriever.get_relevant_documents(query)
+            qa_result = self._qa_chain({"query": query})
+            
+            response_parts = []
+            response_parts.append(f"Answer: {qa_result['result']}")
+            response_parts.append("\n\nRetrieved Chunks (similarity scores not available):")
+            
+            for i, doc in enumerate(relevant_docs, 1):
+                content = doc.page_content
+                metadata = doc.metadata
+                page_info = metadata.get('page', 'Unknown page')
+                
+                response_parts.append(f"\n--- Chunk {i} (Page {page_info}) ---")
+                response_parts.append(f"{content[:300]}...")
+            
+            return "\n".join(response_parts)
 
     async def _arun(self, query: str) -> str:
         return self._run(query)

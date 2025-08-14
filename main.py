@@ -9,7 +9,7 @@ from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from tools import CustomRetrievalTool
+from tools import CustomRetrievalTool, CustomRetrievalToolMultipleChunks, CustomRetrievalToolMultipleChunksScore
 from prompts import written_react_prompt
 import os
 import pickle
@@ -95,8 +95,9 @@ else:
     print("✅ Embeddings saved to", PERSIST_DIR)
 
 retriever = vectorstore.as_retriever()
-custom_tool = CustomRetrievalTool(llm, retriever)
-
+#custom_tool = CustomRetrievalTool(llm, retriever)
+#custom_tool = CustomRetrievalToolMultipleChunks(llm, retriever)
+custom_tool = CustomRetrievalToolMultipleChunksScore(llm, retriever)
 # pdf_tool = Tool(
 #     name="PDF_Retriever",
 #     func=pdf_qa.run,
