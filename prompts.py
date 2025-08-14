@@ -2,7 +2,8 @@ from langchain.prompts.chat import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
     AIMessagePromptTemplate,
-    HumanMessagePromptTemplate,)
+    HumanMessagePromptTemplate,
+    MessagesPlaceholder,)
 from langchain.prompts import PromptTemplate
 
 
@@ -54,4 +55,81 @@ prompt1 = (
     "Use tools if necessary. Respond directly if appropriate. "
     "Format is Action:```$JSON_BLOB``` then Observation:.\n"
     "Thought:"
+)
+
+
+# Simple version of the structured chat agent prompt
+simple_structured_prompt = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(
+        "You are a helpful AI assistant with access to these tools:\n\n{tools}\n\n"
+        "Use tools by providing a JSON blob with 'action' (tool name) and 'action_input' (tool input).\n\n"
+        "Valid actions: 'Final Answer' or {tool_names}\n\n"
+        "Format:\n"
+        "Question: user question\n"
+        "Thought: your reasoning\n"
+        "Action: JSON blob\n"
+        "Observation: tool result\n"
+        "Repeat until you have the answer, then use 'Final Answer'"
+    ),
+    MessagesPlaceholder(variable_name="chat_history", optional=True),
+    HumanMessagePromptTemplate.from_template(
+        "{input}\n\n{agent_scratchpad}"
+    )
+])
+
+
+
+
+
+# Simple ReAct prompt
+simple_react_prompt = PromptTemplate(
+    input_variables=['agent_scratchpad', 'input', 'tool_names', 'tools'],
+    template="""Answer the following questions as best you can. You have access to these tools:
+
+{tools}
+
+IMPORTANT: You MUST follow this EXACT format:
+
+Question: {input}
+Thought: {agent_scratchpad}
+Action: [choose from {tool_names}]
+Action Input: [provide the input for the tool]
+
+Example:
+Question: What is the weather like?
+Thought: I need to search for current weather information
+Action: Web_Search
+Action Input: current weather forecast
+
+Begin now!"""
+)
+
+
+# Simple ReAct prompt
+written_react_prompt = PromptTemplate(
+    input_variables=['agent_scratchpad', 'input', 'tool_names', 'tools'],
+    template="""Answer the following questions as best you can. You have access to these tools:
+
+{tools}
+
+Use the following format to answer the question:
+
+Question: the input question you must answer
+Thought: you should always think about what to do do
+Action: the action to take, should be one of  [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (repeat Thought/Action/Action Input/Observation N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Example:
+Question: What is the weather like?
+Thought: I need to search for current weather information
+Action: Web_Search
+Action Input: current weather forecast
+
+Begin!
+Question: {input}
+Thought: {agent_scratchpad}"""
 )

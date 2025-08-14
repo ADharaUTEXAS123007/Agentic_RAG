@@ -10,7 +10,7 @@ from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from tools import CustomRetrievalTool
-from prompts import prompt1
+from prompts import written_react_prompt
 import os
 import pickle
 import dill
@@ -28,52 +28,54 @@ from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 #prompt = prompt1
 PERSIST_DIR = "./chroma_pdf_store"
 
+# model = "Qwen/Qwen2.5-Coder-32B-Instruct"
+# tokenizer = transformers.AutoTokenizer.from_pretrained(model)
 
-
-model = "EleutherAI/gpt-neo-125m"
-tokenizer = transformers.AutoTokenizer.from_pretrained(model)
-
-pipeline = transformers.pipeline(
-    "text-generation",
-    model=model,
-    tokenizer=tokenizer,
-    torch_dtype=torch.bfloat16,
-    trust_remote_code=True,
-    max_length=200,
-    do_sample=True,
-    top_k=10,
-    num_return_sequences=1,
-    eos_token_id=tokenizer.eos_token_id,
-    pad_token_id=tokenizer.eos_token_id,
-)
-llm = HuggingFacePipeline(pipeline=pipeline)
+# pipeline = transformers.pipeline(
+#     "text-generation",
+#     model=model,
+#     tokenizer=tokenizer,
+#     torch_dtype=torch.bfloat16,
+#     trust_remote_code=True,
+#     max_length=200,
+#     do_sample=True,
+#     top_k=10,
+#     num_return_sequences=1,
+#     eos_token_id=tokenizer.eos_token_id,
+#     pad_token_id=tokenizer.eos_token_id,
+#     device="cpu"
+# )
+# llm = HuggingFacePipeline(pipeline=pipeline)
+llm = ChatOpenAI(model="gpt-4.1", temperature=0, max_tokens=1000)
 
 
 model_name = "BAAI/bge-small-en"
-model_kwargs = {"device": "cpu"}
+model_kwargs = {"device": "cuda"}
 encode_kwargs = {"normalize_embeddings": True}
 emb = HuggingFaceBgeEmbeddings(
     model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
 )
 
 # Wrap the pipeline for LangChain
-#llm = ChatHuggingFace(pipeline=pipe, temperature=0.0)
+#llm = HuggingFacePipeline(pipeline=pipe, temperature=0.0)
 
 
 MEMORY_FILE = "chat_memory.pkl"
-if os.path.exists(MEMORY_FILE):
-    with open(MEMORY_FILE, "rb") as f:
-        saved_data = pickle.load(f)
-        print("saved_data :", saved_data)
-    memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
-    memory.chat_memory.messages = saved_data["chat_history"]
-    memory.moving_summary_buffer = saved_data.get("summary_buffer", "")
-else:
-    memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
+# if os.path.exists(MEMORY_FILE):
+#     with open(MEMORY_FILE, "rb") as f:
+#         saved_data = pickle.load(f)
+#         print("saved_data :", saved_data)
+#     memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
+#     memory.chat_memory.messages = saved_data["chat_history"]
+#     #memory.moving_summary_buffer = saved_data.get("summary_buffer", "")
+# else:
+memory = ConversationSummaryMemory(llm=llm, memory_key="chat_history", return_messages=True)
 # 1. Prompt for ReAct
-prompt = hub.pull("hwchase17/structured-chat-agent")
-prompt
-
+#prompt = hub.pull("hwchase17/structured-chat-agent")
+#prompt
+#from prompts import simple_react_prompt#
+prompt = written_react_prompt
+#prompt = hub.pull("hwchase17/react")
 
 # 3. PDF Loader + Retriever
 loader = PyPDFLoader("/scratch/09143/arnabd/pinn_fwi/agentic_RAG/agentic_RAG/data/Understanding_Climate_Change.pdf")
@@ -110,16 +112,16 @@ web_tool = Tool(
 )
 
 # 5. Create Agent
-tools = [custom_tool, web_tool]
+tools = [custom_tool]
 
-agent = create_structured_chat_agent(
+agent = create_react_agent(
     llm=llm,
     tools=tools,
     prompt=prompt
 )
 
 agent_executor = AgentExecutor.from_agent_and_tools(
-    agent=agent, tools=tools, verbose=True, memory=memory
+    agent=agent, tools=tools, verbose=True, memory=memory, handle_parsing_errors=True
 )
 
 # Initial system message to set the context for the chat
@@ -144,7 +146,7 @@ try:
         # Add the agent's response to the conversation memory
         memory.chat_memory.add_message(AIMessage(content=response["output"]))
         with open(MEMORY_FILE, "wb") as f:
-            pickle.dump({"chat_history": memory.chat_memory.messages, "summary_buffer": memory.moving_summary_buffer}, f)
+            pickle.dump({"chat_history": memory.chat_memory.messages}, f)
         # Save memory after each turn
         #with open(MEMORY_FILE, "wb") as f:
         #    pickle.dump(memory, f)
