@@ -9,7 +9,7 @@ from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from tools import CustomRetrievalTool, CustomRetrievalToolMultipleChunks, CustomRetrievalToolMultipleChunksScore
+from tools import CustomRetrievalTool, CustomRetrievalToolMultipleChunks, CustomRetrievalToolHybridExpanded, AnswerEvalTool
 from prompts import written_react_prompt
 import os
 import pickle
@@ -97,7 +97,8 @@ else:
 retriever = vectorstore.as_retriever()
 #custom_tool = CustomRetrievalTool(llm, retriever)
 #custom_tool = CustomRetrievalToolMultipleChunks(llm, retriever)
-custom_tool = CustomRetrievalToolMultipleChunksScore(llm, retriever)
+custom_tool = CustomRetrievalToolHybridExpanded(llm, retriever, docs)
+eval_tool = AnswerEvalTool(llm)
 # pdf_tool = Tool(
 #     name="PDF_Retriever",
 #     func=pdf_qa.run,
@@ -113,7 +114,7 @@ web_tool = Tool(
 )
 
 # 5. Create Agent
-tools = [custom_tool]
+tools = [custom_tool, eval_tool]
 
 agent = create_react_agent(
     llm=llm,
@@ -128,8 +129,12 @@ agent_executor = AgentExecutor.from_agent_and_tools(
 # Initial system message to set the context for the chat
 # SystemMessage is used to define a message from the system to the agent, setting initial instructions or context
 initial_message = ("You are an AI assistant. For every user question, you MUST use the available tools to find the answer, "
-    "even if you think you know the answer. Do NOT answer from your own knowledge. "
-    "The available tools are: custom_retrieval, Web_Search."
+    "even if you think you know the answer. Do NOT answer from your own knowledge "
+    "or make guesses. If a tool fails to return an answer, respond only with 'No relevant information found.' "
+    "Do not attempt to answer from memory."
+    "The available tools are: custom_retrieval, answer_eval."
+    "When appropriate, use the 'answer_eval' tool to check the quality of an answer "
+    "before presenting it to the user. If the evaluation score is low (<7), refine the answer."
 )
 memory.chat_memory.add_message(SystemMessage(content=initial_message))
 
@@ -153,3 +158,5 @@ try:
         #    pickle.dump(memory, f)
 except KeyboardInterrupt:
     pass
+
+

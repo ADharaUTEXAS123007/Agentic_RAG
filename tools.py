@@ -4,7 +4,7 @@ from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
 from pydantic import PrivateAttr
 from typing import List, Dict, Any
-
+from langchain.retrievers import BM25Retriever
 
 
 # def get_chunk_by_index(vectorstore, target_index: int) -> Document:
@@ -169,73 +169,131 @@ class CustomRetrievalToolMultipleChunks(BaseTool):
         return self._run(query)
     
 
-class CustomRetrievalToolMultipleChunksScore(BaseTool):
-    name: str = "custom_retrieval_multiple_chunks"
-    description: str = "Retrieve answers from custom document store with multiple chunks and similarity scores"
+class CustomRetrievalToolHybridExpanded(BaseTool):
+    name: str = "custom_retrieval_hybrid_expanded"
+    description: str = (
+        "Retrieve answers from a custom document store using query expansion, "
+        "hybrid retrieval (semantic + keyword), and similarity scores"
+    )
     _qa_chain: any = PrivateAttr()
     _retriever: any = PrivateAttr()
+    _bm25_retriever: any = PrivateAttr()
+    _llm: any = PrivateAttr()
 
-    def __init__(self, llm, retriever):
+    def __init__(self, llm, retriever, docs):
+        """
+        retriever: Vectorstore retriever
+        docs: List of Document objects (for BM25 retriever)
+        """
         super().__init__()
         self._retriever = retriever
+        self._bm25_retriever = BM25Retriever.from_documents(docs)
+        self._llm = llm
         self._qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             retriever=retriever,
             return_source_documents=True
         )
 
-    def _run(self, query: str) -> str:
-        print("Calling custom retrieval tool with similarity scores")
-        
-        # Use similarity_search_with_score to get documents with scores
+    def _expand_query(self, query: str) -> list[str]:
+        """Use LLM to create semantically related queries for better recall."""
+        prompt = f"""
+        Expand the following search query into 3 semantically related variations 
+        that might retrieve additional relevant passages from a document database.
+        Query: "{query}"
+        Return only the variations, one per line, no numbering.
+        """
         try:
-            # Get documents with similarity scores
-            docs_with_scores = self._retriever.vectorstore.similarity_search_with_score(
-                query, 
-                k=3
+            response = self._llm.predict(prompt)
+        except AttributeError:
+            response = self._llm.invoke(prompt).content
+
+        expansions = [line.strip() for line in response.split("\n") if line.strip()]
+        return [query] + expansions  # include original query
+
+    def _run(self, query: str) -> str:
+        print("Calling hybrid retrieval tool with query expansion")
+
+        expanded_queries = self._expand_query(query)
+        all_docs_with_scores = []
+
+        # 1️⃣ Semantic retrieval for each expanded query
+        for q in expanded_queries:
+            try:
+                docs_with_scores = self._retriever.vectorstore.similarity_search_with_score(q, k=3)
+                all_docs_with_scores.extend(docs_with_scores)
+            except Exception as e:
+                print(f"Semantic retrieval error for '{q}': {e}")
+
+        # 2️⃣ BM25 retrieval for each expanded query
+        for q in expanded_queries:
+            try:
+                bm25_docs = self._bm25_retriever.get_relevant_documents(q)
+                # BM25 doesn't return scores in LangChain by default → assign pseudo-score
+                all_docs_with_scores.extend((doc, 0.5) for doc in bm25_docs)
+            except Exception as e:
+                print(f"BM25 retrieval error for '{q}': {e}")
+
+        # 3️⃣ Deduplicate by content
+        seen = set()
+        unique_docs_with_scores = []
+        for doc, score in all_docs_with_scores:
+            if doc.page_content not in seen:
+                seen.add(doc.page_content)
+                unique_docs_with_scores.append((doc, score))
+
+        # 4️⃣ Merge context for QA
+        merged_context = " ".join(doc.page_content for doc, _ in unique_docs_with_scores)
+        qa_result = self._qa_chain({"query": query, "context": merged_context})
+
+        # 5️⃣ Format output
+        response_parts = [f"Answer: {qa_result['result']}"]
+        response_parts.append("\n\nRetrieved Chunks (Hybrid Retrieval) with Similarity Scores:")
+        for i, (doc, score) in enumerate(unique_docs_with_scores, 1):
+            page_info = doc.metadata.get('page', 'Unknown page')
+            similarity_percentage = (1 - score) * 100 if score <= 1 else (1 / (1 + score)) * 100
+            response_parts.append(
+                f"\n--- Chunk {i} (Page {page_info}, Similarity: {similarity_percentage:.1f}%) ---"
             )
-            
-            # Get the QA chain result
-            qa_result = self._qa_chain({"query": query})
-            
-            # Format the response
-            response_parts = []
-            response_parts.append(f"Answer: {qa_result['result']}")
-            response_parts.append("\n\nRetrieved Chunks with Similarity Scores:")
-            
-            for i, (doc, score) in enumerate(docs_with_scores, 1):
-                content = doc.page_content
-                metadata = doc.metadata
-                page_info = metadata.get('page', 'Unknown page')
-                
-                # Convert similarity score to a more readable format
-                # Higher score = more similar (cosine similarity)
-                similarity_percentage = (1 - score) * 100 if score <= 1 else (1 / (1 + score)) * 100
-                
-                response_parts.append(f"\n--- Chunk {i} (Page {page_info}, Similarity: {similarity_percentage:.1f}%) ---")
-                response_parts.append(f"{content[:300]}...")
-            
-            return "\n".join(response_parts)
-            
-        except Exception as e:
-            print(f"Error getting similarity scores: {e}")
-            # Fallback to regular retrieval
-            relevant_docs = self._retriever.get_relevant_documents(query)
-            qa_result = self._qa_chain({"query": query})
-            
-            response_parts = []
-            response_parts.append(f"Answer: {qa_result['result']}")
-            response_parts.append("\n\nRetrieved Chunks (similarity scores not available):")
-            
-            for i, doc in enumerate(relevant_docs, 1):
-                content = doc.page_content
-                metadata = doc.metadata
-                page_info = metadata.get('page', 'Unknown page')
-                
-                response_parts.append(f"\n--- Chunk {i} (Page {page_info}) ---")
-                response_parts.append(f"{content[:300]}...")
-            
-            return "\n".join(response_parts)
+            response_parts.append(f"{doc.page_content[:300]}...")
+
+        return "\n".join(response_parts)
 
     async def _arun(self, query: str) -> str:
         return self._run(query)
+    
+
+class AnswerEvalTool(BaseTool):
+    name: str = "answer_eval"
+    description: str = (
+        "Evaluate the quality of an answer given a question using an LLM-as-a-judge approach."
+    )
+    _llm: any = PrivateAttr()
+
+    def __init__(self, llm):
+        super().__init__()
+        self._llm = llm
+
+    def _run(self, input_text: str) -> str:
+        """
+        input_text format: 
+        QUESTION: <question text>
+        ANSWER: <answer text>
+        """
+        prompt = f"""
+        You are an expert evaluator. Rate the following answer for correctness, completeness, and clarity
+        on a scale of 1 (poor) to 10 (excellent). Provide reasoning for your score.
+
+        {input_text}
+
+        Return the result in this format:
+        SCORE: <number>
+        REASON: <short explanation>
+        """
+        try:
+            return self._llm.predict(prompt)
+        except AttributeError:
+            return self._llm.invoke(prompt).content
+
+    async def _arun(self, input_text: str) -> str:
+        return self._run(input_text)
